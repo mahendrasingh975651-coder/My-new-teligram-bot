@@ -3,93 +3,91 @@ import os
 import asyncio
 import yfinance as yf
 from telegram import Bot
-import pandas as pd
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
+# 🛠️ आपकी सेटिंग्स (पहले से सेट कर दी हैं)
+TOKEN = "8859992598:AAF8ZRS3xt1vavbtLvVWhBG"
+CHAT_ID = "5994059280"
 
-TOKEN = "8859992598:AAF8ZRS3xt1vavbtLvVWhBGkuKEEx-YJ_M0"
-CHAT_ID = '5994059280'
+port = int(os.getenv("PORT", 8000))
 
-class DummyServer(BaseHTTPRequestHandler):
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Nifty RSI Strategy Bot is Running!")
+        self.wfile.write(b"Bot is alive")
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), DummyServer)
-    server.serve_forever()
+def run_server():
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    import threading
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
 async def check_strategy():
     bot = Bot(token=TOKEN)
-    print("9/21 EMA + RSI स्ट्रेटजी बोट शुरू हो गया है...")
-    last_signal = None 
+    print("1-Minute Pre-Alert Trading Bot Started...")
+    last_signal = None
 
     while True:
         try:
             ticker = yf.Ticker("^NSEI")
-            df = ticker.history(period="1mo", interval="5m")
+            df = ticker.history(period="1mo", interval="15m")
             
-if len(df) > 30:
+            if df.empty or len(df) < 30:
+                await asyncio.sleep(10)
+                continue
 
-                # 1. EMA कैलकुलेशन
-                df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-                df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+            # EMA Calculation
+            df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+            df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+
+            # RSI Calculation
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / (loss + 1e-10)
+            df['RSI'] = 100 - (100 / (1 + rs))
+
+            current_price = round(df['Close'].iloc[-1], 2)
+            ema9_now = df['EMA_9'].iloc[-1]
+            ema21_now = df['EMA_21'].iloc[-1]
+            rsi_now = df['RSI'].iloc[-1]
+
+            # सिग्नल कंडीशन चेक करना
+            if ema9_now > ema21_now and rsi_now > 58:
+                current_signal = "BUY"
+            elif ema9_now < ema21_now and rsi_now < 42:
+                current_signal = "SELL"
+            else:
+                current_signal = "HOLD"
+
+            # अगर कोई मजबूत कंडीशन बन रही है, तो टेलीग्राम पर मैसेज भेजना
+            if current_signal != "HOLD" and current_signal != last_signal:
+                last_signal = current_signal
                 
-                # 2. RSI मैन्युअल कैलकुलेशन (बिना किसी बाहरी लाइब्रेरी के)
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                df['RSI'] = 100 - (100 / (1 + rs))
+                target_price = current_price + 120 if current_signal == "BUY" else current_price - 120
+                sl_price = current_price - 40 if current_signal == "BUY" else current_price + 40
+                option_type = "CE (Call Option)" if current_signal == "BUY" else "PE (Put Option)"
+
+                message_text = (
+                    f"⚠️ *🚨 UPCOMING SIGNAL ALERT (1 MIN LEFT) 🚨*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📝 *Action:* Prepare to {current_signal} {option_type}\n"
+                    f"💰 *Expected Entry:* ₹{current_price}\n"
+                    f"🎯 *Target (~100pt Premium):* ₹{round(target_price, 2)}\n"
+                    f"🛑 *StopLoss:* ₹{round(sl_price, 2)}\n"
+                    f"📊 *Current RSI:* {round(rsi_now, 2)}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏳ _अगले 1 मिनट में कैंडल क्लोज होते ही ट्रेड एग्जीक्यूट करें।_"
+                )
                 
-                # आखिरी कैंडल्स का डेटा
-                prev_row = df.iloc[-3]
-                last_row = df.iloc[-2] # क्लोज कैंडल
-                current_price = df['Close'].iloc[-1]
-                
-                current_rsi = last_row['RSI']
-                
-                # 🔴 CALL ENTRY (EMA Cross Up + RSI > 55 मजबूत ट्रेंड के लिए)
-                if prev_row['EMA_9'] <= prev_row['EMA_21'] and last_row['EMA_9'] > last_row['EMA_21']:
-                    if current_rsi > 55:
-                        if last_signal != "BUY":
-                            entry = round(current_price, 2)
-                            target = round(entry + 70, 2)
-                            sl = round(entry - 35, 2)
-                            
-                            msg = f"🔥 **NIFTY CALL ENTRY (BUY)** 🔥\n\n" \
-                                  f"📈 एंट्री प्राइस: {entry}\n" \
-                                  f"🎯 टारगेट (Target): {target} (+70 Pts)\n" \
-                                  f"⚠️ स्टॉपलॉस (SL): {sl} (-35 Pts)\n" \
-                                  f"📊 RSI: {round(current_rsi, 2)} (मजबूत मोमेंटम)"
-                            await bot.send_message(chat_id=CHAT_ID, text=msg)
-                            last_signal = "BUY"
-                
-                # 🟢 PUT ENTRY (EMA Cross Down + RSI < 45 मजबूत मंदी के लिए)
-                elif prev_row['EMA_9'] >= prev_row['EMA_21'] and last_row['EMA_9'] < last_row['EMA_21']:
-                    if current_rsi < 45:
-                        if last_signal != "SELL":
-                            entry = round(current_price, 2)
-                            target = round(entry - 70, 2)
-                            sl = round(entry + 35, 2)
-                            
-                            msg = f"💥 **NIFTY PUT ENTRY (SELL)** 💥\n\n" \
-                                  f"📉 एंट्री प्राइस: {entry}\n" \
-                                  f"🎯 टारगेट (Target): {target} (-70 Pts)\n" \
-                                  f"⚠️ स्टॉपलॉस (SL): {sl} (+35 Pts)\n" \
-                                  f"📊 RSI: {round(current_rsi, 2)} (मजबूत मंदी)"
-                            await bot.send_message(chat_id=CHAT_ID, text=msg)
-                            last_signal = "SELL"
-                            
+                await bot.send_message(chat_id=CHAT_ID, text=message_text, parse_mode='Markdown')
+                print(f"एडवांस अलर्ट टेलीग्राम पर भेजा गया: {current_signal}")
+
         except Exception as e:
-            print(f"रणनीति एरर: {e}")
-            
-        await asyncio.sleep(300)
+            print(f"Error: {e}")
+        
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
+    run_server()
     asyncio.run(check_strategy())
