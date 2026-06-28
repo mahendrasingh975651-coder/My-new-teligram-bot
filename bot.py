@@ -7,7 +7,7 @@ import pandas as pd
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
-# अपना असली टोकन यहाँ डालें
+
 TOKEN = "8859992598:AAF8ZRS3xt1vavbtLvVWhBGkuKEEx-YJ_M0"
 CHAT_ID = '5994059280'
 
