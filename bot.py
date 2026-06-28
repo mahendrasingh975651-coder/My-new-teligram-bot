@@ -31,9 +31,10 @@ async def check_strategy():
     while True:
         try:
             ticker = yf.Ticker("^NSEI")
-            df = ticker.history(period="3d", interval="5m")
+            df = ticker.history(period="1mo", interval="5m")
             
-            if len(df) > 30:
+if len(df) > 30:
+
                 # 1. EMA कैलकुलेशन
                 df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
                 df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
