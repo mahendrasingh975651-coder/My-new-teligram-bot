@@ -1,5 +1,6 @@
-pyTelegramBotAPI
-pandas
-yfinance
 
+
+pyTelegramBotAPI
+Flask
+gunicorn
 
